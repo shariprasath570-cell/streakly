@@ -17,11 +17,13 @@ import { WEEKDAY_INITIALS } from "@/lib/date";
 import { recentDays, streakStats } from "@/lib/streaks";
 import type { Habit } from "@/lib/types";
 import { cn, plural } from "@/lib/utils";
+import { useAuth } from "./auth-provider";
 import { useHabits } from "./habit-provider";
 import { Button, ConfirmDialog } from "./ui";
 
 export function HabitCard({ habit, index = 0 }: { habit: Habit; index?: number }) {
   const { toggleCompletion, setArchived, deleteHabit, openHabitForm } = useHabits();
+  const { configured } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -299,7 +301,11 @@ export function HabitCard({ habit, index = 0 }: { habit: Habit; index?: number }
           setConfirmOpen(false);
         }}
         title={`Delete "${habit.name}"?`}
-        description="This permanently removes the habit and its entire completion history from this device. Archiving keeps the data instead."
+        description={
+          configured
+            ? "This permanently removes the habit and its entire completion history from your account and every device. Archiving keeps the data instead."
+            : "This permanently removes the habit and its entire completion history from this device. Archiving keeps the data instead."
+        }
         confirmLabel="Delete forever"
       />
     </article>

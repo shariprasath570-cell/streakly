@@ -2,7 +2,7 @@
   "name": "streakly",
   "version": "1.0.0",
   "private": true,
-  "description": "Streakly — a calm, local-first habit tracker with streaks.",
+  "description": "Streakly — a calm habit tracker with streaks and secure per-user sync.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "geist": "^1.9.2",
     "lucide-react": "^1.71.0",
     "next": "^16.4.6",

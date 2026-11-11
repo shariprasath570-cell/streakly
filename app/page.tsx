@@ -12,6 +12,7 @@ import {
   TrendingUp,
   Archive,
 } from "lucide-react";
+import { useAuth } from "@/components/auth-provider";
 import { HabitCard } from "@/components/habit-card";
 import { useHabits } from "@/components/habit-provider";
 import { StatTile } from "@/components/stat-tile";
@@ -24,6 +25,7 @@ import { cn, plural } from "@/lib/utils";
 
 export default function DashboardPage() {
   const { habits, hydrated, openHabitForm, loadSample } = useHabits();
+  const { user } = useAuth();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [showArchived, setShowArchived] = useState(false);
@@ -258,10 +260,12 @@ export default function DashboardPage() {
 
       {habits.length > 0 ? (
         <p className="pb-2 text-center text-[11px] text-muted">
-          Everything is saved in this browser — no account, no server.{" "}
+          {user
+            ? "Synced securely to your account — available on every device."
+            : "Everything is saved in this browser — no account, no server."}{" "}
           <span className="inline-flex items-center gap-1">
             <span className="size-1.5 rounded-full bg-accent" />
-            Local-first
+            {user ? "Cloud sync" : "Local-first"}
           </span>
         </p>
       ) : null}

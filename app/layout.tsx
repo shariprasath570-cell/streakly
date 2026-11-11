@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     template: "%s · Streakly",
   },
   description:
-    "Streakly is a calm, local-first habit tracker. Check in daily, grow your streaks and watch your consistency add up.",
+    "Streakly is a calm habit tracker with secure per-user sync. Check in daily, grow your streaks and keep your progress on every device.",
   applicationName: "Streakly",
   authors: [{ name: "Streakly" }],
   keywords: ["habit tracker", "streaks", "consistency", "daily habits", "productivity"],

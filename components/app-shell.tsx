@@ -5,14 +5,18 @@ import { usePathname } from "next/navigation";
 import {
   BarChart3,
   CalendarDays,
+  Cloud,
   Flame,
   LayoutDashboard,
+  LogOut,
   Plus,
   Sun,
   Moon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "./auth-provider";
+import { AuthScreen } from "./auth-screen";
 import { useHabits } from "./habit-provider";
 import { useTheme } from "./theme-provider";
 import { HabitFormDialog } from "./habit-form";
@@ -67,7 +71,26 @@ function ThemeToggle({ className }: { className?: string }) {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { openHabitForm, hydrated, habits } = useHabits();
+  const { configured, ready, user, signOut } = useAuth();
   const activeCount = habits.filter((habit) => !habit.archived).length;
+  const totalCheckIns = habits.reduce((sum, habit) => sum + habit.completions.length, 0);
+
+  if (configured && !ready) {
+    return (
+      <div className="grid min-h-screen place-items-center px-6" role="status" aria-live="polite">
+        <div className="flex flex-col items-center gap-3">
+          <div className="grid size-12 animate-pulse place-items-center rounded-2xl bg-gradient-to-br from-teal-400 to-emerald-600">
+            <Flame className="size-6 text-white" strokeWidth={2.4} />
+          </div>
+          <p className="text-sm text-muted">Loading your streaks…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (configured && !user) {
+    return <AuthScreen />;
+  }
 
   return (
     <div className="relative min-h-screen">
@@ -116,17 +139,42 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="mt-auto space-y-3">
-          <div className="rounded-xl border border-line bg-surface/60 p-3">
-            <p className="flex items-center gap-1.5 text-[11px] font-medium text-fg-soft">
-              <span className="size-1.5 rounded-full bg-accent" />
-              Local-first
-            </p>
-            <p className="mt-1 text-[11px] leading-relaxed text-muted">
-              {hydrated
-                ? `${habits.reduce((sum, habit) => sum + habit.completions.length, 0)} check-ins saved on this device.`
-                : "Loading your data…"}
-            </p>
-          </div>
+          {user ? (
+            <div className="rounded-xl border border-line bg-surface/60 p-3">
+              <p className="flex items-center gap-1.5 text-[11px] font-medium text-fg-soft">
+                <Cloud className="size-3 text-accent" />
+                Synced
+              </p>
+              <p className="mt-1 truncate text-[11px] text-muted" title={user.email ?? undefined}>
+                {user.email ?? "Signed in"}
+              </p>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                {hydrated
+                  ? `${totalCheckIns} check-ins saved to your account.`
+                  : "Loading your data…"}
+              </p>
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-line px-2 py-1.5 text-[11px] font-medium text-muted transition hover:border-line-strong hover:text-fg"
+              >
+                <LogOut className="size-3" />
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-line bg-surface/60 p-3">
+              <p className="flex items-center gap-1.5 text-[11px] font-medium text-fg-soft">
+                <span className="size-1.5 rounded-full bg-accent" />
+                Local-first
+              </p>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                {hydrated
+                  ? `${totalCheckIns} check-ins saved on this device.`
+                  : "Loading your data…"}
+              </p>
+            </div>
+          )}
           <div className="flex items-center justify-between px-1">
             <span className="text-[11px] text-muted">Appearance</span>
             <ThemeToggle />
@@ -137,7 +185,20 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="md:pl-64">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-line bg-bg/80 px-4 backdrop-blur-xl md:hidden">
           <Logo />
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            {user ? (
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                aria-label={user.email ? `Sign out of ${user.email}` : "Sign out"}
+                title={user.email ?? "Sign out"}
+                className="grid size-9 place-items-center rounded-lg border border-line bg-surface2/50 text-muted transition hover:border-line-strong hover:text-fg"
+              >
+                <LogOut className="size-4" />
+              </button>
+            ) : null}
+            <ThemeToggle />
+          </div>
         </header>
 
         <main className="relative z-10 mx-auto w-full max-w-6xl px-4 pb-32 pt-6 sm:px-6 md:pb-16 md:pt-10">

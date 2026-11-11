@@ -10,13 +10,27 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import {
+  deleteAllHabitRows,
+  deleteHabitRow,
+  fetchHabits,
+  habitToRow,
+  insertHabit,
+  updateHabitRow,
+  upsertHabits,
+} from "@/lib/cloud";
 import { todayKey } from "@/lib/date";
 import { buildSampleHabits } from "@/lib/sample";
 import { newMilestone, streakStats } from "@/lib/streaks";
 import type { DateKey, Habit, HabitColor, HabitInput, PersistedData } from "@/lib/types";
 import { createId } from "@/lib/utils";
+import { useAuth } from "./auth-provider";
 
 const STORAGE_KEY = "streakly.habits.v1";
+const MIGRATED_KEY = "streakly.cloud-migrated.v1";
+
+const cacheKeyFor = (userId: string | null) =>
+  userId ? `${STORAGE_KEY}.${userId}` : STORAGE_KEY;
 
 export interface Celebration {
   id: string;
@@ -85,9 +99,9 @@ function isHabitLike(value: unknown): value is Habit {
   return typeof habit.id === "string" && typeof habit.name === "string";
 }
 
-function readStoredHabits(): Habit[] {
+function readStoredHabits(key = STORAGE_KEY): Habit[] {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as PersistedData;
     if (!parsed || !Array.isArray(parsed.habits)) return [];
@@ -97,42 +111,121 @@ function readStoredHabits(): Habit[] {
   }
 }
 
+function hasMigratedGuestData(): boolean {
+  try {
+    return window.localStorage.getItem(MIGRATED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markGuestDataMigrated() {
+  try {
+    window.localStorage.setItem(MIGRATED_KEY, "1");
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Ignore storage failures; migration still completed in the cloud.
+  }
+}
+
 export function HabitProvider({ children }: { children: ReactNode }) {
+  const { configured, ready, user } = useAuth();
+  const userId = user?.id ?? null;
   const [habits, setHabits] = useState<Habit[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [celebration, setCelebration] = useState<Celebration | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [form, setForm] = useState<FormState>({ open: false, habitId: null });
+
+  const notify = useCallback((message: string) => {
+    setToasts((current) => [...current.slice(-2), { id: createId(), message }]);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
   const habitsRef = useRef<Habit[]>([]);
 
   useEffect(() => {
     habitsRef.current = habits;
   }, [habits]);
 
+  // Load the signed-in user's habits from Supabase; fall back to the local cache
+  // when the network is unavailable. Guests read the original local envelope.
   useEffect(() => {
-    setHabits(readStoredHabits());
-    setHydrated(true);
-  }, []);
+    if (!ready) {
+      setHydrated(false);
+      return;
+    }
 
+    if (!configured || !userId) {
+      setHabits(readStoredHabits(STORAGE_KEY));
+      setHydrated(true);
+      return;
+    }
+
+    let active = true;
+    const cacheKey = cacheKeyFor(userId);
+    setHydrated(false);
+    setHabits(readStoredHabits(cacheKey));
+
+    void (async () => {
+      try {
+        let cloud = await fetchHabits(userId);
+
+        // First sign-in: move habits created before accounts existed into the cloud.
+        if (cloud.length === 0 && !hasMigratedGuestData()) {
+          const guestHabits = readStoredHabits(STORAGE_KEY);
+          if (guestHabits.length > 0) {
+            await upsertHabits(guestHabits.map((habit) => habitToRow(habit, userId)));
+            cloud = guestHabits;
+            markGuestDataMigrated();
+            if (active) {
+              notify(
+                `${guestHabits.length} ${guestHabits.length === 1 ? "habit" : "habits"} moved to your account`,
+              );
+            }
+          }
+        }
+
+        if (!active) return;
+        setHabits(cloud);
+        setHydrated(true);
+      } catch {
+        if (!active) return;
+        setHydrated(true);
+        notify("Couldn’t reach the cloud. Showing the last copy saved on this device.");
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [configured, ready, userId, notify]);
+
+  // Keep a per-user local cache so the first paint is instant and offline reads work.
   useEffect(() => {
     if (!hydrated) return;
+    const key = cacheKeyFor(userId);
     const payload: PersistedData = { version: 1, habits };
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      window.localStorage.setItem(key, JSON.stringify(payload));
     } catch {
       // Ignore quota / private-mode write failures; state still lives in memory.
     }
-  }, [habits, hydrated]);
+  }, [habits, hydrated, userId]);
 
-  // Keep multiple open tabs of Streakly in sync.
+  // Keep multiple open tabs in sync.
   useEffect(() => {
+    const key = cacheKeyFor(userId);
     const onStorage = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY) return;
-      setHabits(readStoredHabits());
+      if (event.key !== key) return;
+      setHabits(readStoredHabits(key));
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     if (toasts.length === 0) return;
@@ -142,13 +235,9 @@ export function HabitProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(timer);
   }, [toasts]);
 
-  const notify = useCallback((message: string) => {
-    setToasts((current) => [...current.slice(-2), { id: createId(), message }]);
-  }, []);
-
-  const dismissToast = useCallback((id: string) => {
-    setToasts((current) => current.filter((toast) => toast.id !== id));
-  }, []);
+  const syncFailed = useCallback(() => {
+    notify("Couldn’t sync that change. Check your connection and try again.");
+  }, [notify]);
 
   const openHabitForm = useCallback((habitId?: string) => {
     setForm({ open: true, habitId: habitId ?? null });
@@ -175,93 +264,180 @@ export function HabitProvider({ children }: { children: ReactNode }) {
       };
       setHabits((current) => [habit, ...current]);
       notify(`${name} added`);
+
+      if (userId) {
+        void insertHabit(habitToRow(habit, userId)).catch(() => {
+          setHabits((current) => current.filter((entry) => entry.id !== habit.id));
+          syncFailed();
+        });
+      }
     },
-    [notify],
+    [notify, syncFailed, userId],
   );
 
   const updateHabit = useCallback(
     (id: string, input: HabitInput) => {
       const name = input.name.trim();
       if (!name) return;
+      const previous = habitsRef.current.find((habit) => habit.id === id);
+      if (!previous) return;
+
+      const description = input.description?.trim() ? input.description.trim() : undefined;
       setHabits((current) =>
         current.map((habit) =>
           habit.id === id
-            ? {
-                ...habit,
-                name,
-                description: input.description?.trim() ? input.description.trim() : undefined,
-                color: input.color,
-                category: input.category,
-              }
+            ? { ...habit, name, description, color: input.color, category: input.category }
             : habit,
         ),
       );
       notify("Habit updated");
+
+      if (userId) {
+        void updateHabitRow(id, {
+          name,
+          description: description ?? null,
+          color: input.color,
+          category: input.category ?? null,
+        }).catch(() => {
+          setHabits((current) =>
+            current.map((habit) =>
+              habit.id === id
+                ? {
+                    ...habit,
+                    name: previous.name,
+                    description: previous.description,
+                    color: previous.color,
+                    category: previous.category,
+                  }
+                : habit,
+            ),
+          );
+          syncFailed();
+        });
+      }
     },
-    [notify],
+    [notify, syncFailed, userId],
   );
 
   const deleteHabit = useCallback(
     (id: string) => {
       const target = habitsRef.current.find((habit) => habit.id === id);
+      const index = habitsRef.current.findIndex((habit) => habit.id === id);
       setHabits((current) => current.filter((habit) => habit.id !== id));
       if (target) notify(`${target.name} deleted`);
+
+      if (userId) {
+        void deleteHabitRow(id).catch(() => {
+          setHabits((current) => {
+            if (!target || current.some((habit) => habit.id === id)) return current;
+            const restored = [...current];
+            restored.splice(Math.min(Math.max(index, 0), restored.length), 0, target);
+            return restored;
+          });
+          syncFailed();
+        });
+      }
     },
-    [notify],
+    [notify, syncFailed, userId],
   );
 
   const setArchived = useCallback(
     (id: string, archived: boolean) => {
+      const previous = habitsRef.current.find((habit) => habit.id === id);
       setHabits((current) =>
         current.map((habit) => (habit.id === id ? { ...habit, archived } : habit)),
       );
       notify(archived ? "Habit archived" : "Habit restored");
-    },
-    [notify],
-  );
 
-  const toggleCompletion = useCallback((id: string, dateKey: DateKey = todayKey()) => {
-    const today = todayKey();
-    // Only the current day can be (un)marked; history stays untouched.
-    if (dateKey !== today) return;
-
-    const habit = habitsRef.current.find((entry) => entry.id === id);
-    if (!habit || habit.archived) return;
-
-    const wasCompleted = habit.completions.includes(dateKey);
-    const nextCompletions = wasCompleted
-      ? habit.completions.filter((key) => key !== dateKey)
-      : [...habit.completions, dateKey].sort();
-
-    const before = streakStats(habit.completions, dateKey);
-    const after = streakStats(nextCompletions, dateKey);
-
-    setHabits((current) =>
-      current.map((entry) => (entry.id === id ? { ...entry, completions: nextCompletions } : entry)),
-    );
-
-    if (!wasCompleted) {
-      const milestone = newMilestone(before.current, after.current);
-      if (milestone) {
-        setCelebration({
-          id: createId(),
-          habitName: habit.name,
-          streak: after.current,
-          milestone,
+      if (userId) {
+        void updateHabitRow(id, { archived }).catch(() => {
+          if (previous) {
+            setHabits((current) =>
+              current.map((habit) =>
+                habit.id === id ? { ...habit, archived: previous.archived } : habit,
+              ),
+            );
+          }
+          syncFailed();
         });
       }
-    }
-  }, []);
+    },
+    [notify, syncFailed, userId],
+  );
+
+  const toggleCompletion = useCallback(
+    (id: string, dateKey: DateKey = todayKey()) => {
+      const today = todayKey();
+      // Only the current day can be (un)marked; history stays untouched.
+      if (dateKey !== today) return;
+
+      const habit = habitsRef.current.find((entry) => entry.id === id);
+      if (!habit || habit.archived) return;
+
+      const wasCompleted = habit.completions.includes(dateKey);
+      const nextCompletions = wasCompleted
+        ? habit.completions.filter((key) => key !== dateKey)
+        : [...habit.completions, dateKey].sort();
+
+      const before = streakStats(habit.completions, dateKey);
+      const after = streakStats(nextCompletions, dateKey);
+
+      setHabits((current) =>
+        current.map((entry) => (entry.id === id ? { ...entry, completions: nextCompletions } : entry)),
+      );
+
+      if (userId) {
+        void updateHabitRow(id, { completions: nextCompletions }).catch(() => {
+          setHabits((current) =>
+            current.map((entry) =>
+              entry.id === id ? { ...entry, completions: habit.completions } : entry,
+            ),
+          );
+          syncFailed();
+        });
+      }
+
+      if (!wasCompleted) {
+        const milestone = newMilestone(before.current, after.current);
+        if (milestone) {
+          setCelebration({
+            id: createId(),
+            habitName: habit.name,
+            streak: after.current,
+            milestone,
+          });
+        }
+      }
+    },
+    [syncFailed, userId],
+  );
 
   const loadSample = useCallback(() => {
-    setHabits((current) => [...buildSampleHabits(), ...current]);
+    const samples = buildSampleHabits();
+    const sampleIds = new Set(samples.map((habit) => habit.id));
+    setHabits((current) => [...samples, ...current]);
     notify("Sample habits loaded");
-  }, [notify]);
+
+    if (userId) {
+      void upsertHabits(samples.map((habit) => habitToRow(habit, userId))).catch(() => {
+        setHabits((current) => current.filter((habit) => !sampleIds.has(habit.id)));
+        syncFailed();
+      });
+    }
+  }, [notify, syncFailed, userId]);
 
   const clearHabits = useCallback(() => {
+    const previous = habitsRef.current;
     setHabits([]);
     notify("All habits cleared");
-  }, [notify]);
+
+    if (userId) {
+      void deleteAllHabitRows(userId).catch(() => {
+        setHabits(previous);
+        syncFailed();
+      });
+    }
+  }, [notify, syncFailed, userId]);
 
   const value = useMemo<HabitContextValue>(
     () => ({
